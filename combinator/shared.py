@@ -24,6 +24,10 @@ DEFAULT_CONFIG = {
     "output_dir": "generated_images",
     "last_zone_config": "",
     "last_prompt_config": "",
+    "enabled_tabs": {
+        "combinator": True,
+        "comic_generator": True,
+    },
     "defaults": {
         "positive_prompt": "masterpiece, best quality, sharp focus, highres",
         "negative_prompt": "(low quality, worst quality:1.4)",

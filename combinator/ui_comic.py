@@ -564,6 +564,11 @@ def create_comic_tab():
                     outputs=[strip_log, strip_page_gallery],
                 )
 
+            # ── Wizard sub-tab ────────────────────────────────────────
+            with gr.Tab("Wizard"):
+                from combinator.ui_wizard import create_wizard_tab_content
+                create_wizard_tab_content(script_editor_target=script_editor)
+
             # ── Assembly sub-tab ──────────────────────────────────────
             with gr.Tab("Assembly"):
                 with gr.Row():
