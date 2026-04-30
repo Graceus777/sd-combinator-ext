@@ -16,12 +16,6 @@ def install_package(package: str):
 
 
 try:
-    import rembg  # noqa: F401
-except ImportError:
-    print("[CombinatorSD] Installing rembg...")
-    install_package("rembg[gpu]")
-
-try:
     from PIL import Image  # noqa: F401
 except ImportError:
     print("[CombinatorSD] Installing Pillow...")

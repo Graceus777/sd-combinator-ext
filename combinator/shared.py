@@ -12,8 +12,6 @@ EXT_DIR = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LORA_TEXTS_DIR = EXT_DIR / "lora_texts"
 CONFIGS_DIR = EXT_DIR / "configs"
 PROMPT_CONFIGS_DIR = CONFIGS_DIR / "prompts"
-STORYBOARDS_DIR = EXT_DIR / "storyboards"
-STRIPS_DIR = STORYBOARDS_DIR / "strips"
 
 # Files
 CONFIG_FILE = EXT_DIR / "config.json"
@@ -24,10 +22,6 @@ DEFAULT_CONFIG = {
     "output_dir": "generated_images",
     "last_zone_config": "",
     "last_prompt_config": "",
-    "enabled_tabs": {
-        "combinator": True,
-        "comic_generator": True,
-    },
     "defaults": {
         "positive_prompt": "masterpiece, best quality, sharp focus, highres",
         "negative_prompt": "(low quality, worst quality:1.4)",
