@@ -179,3 +179,16 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# Editors / local tooling
+.claude/
+.vscode/
+.idea/
+
+# CombinatorSD runtime data (user-generated)
+generated_images/
+generation_history.jsonl
+config.json
+
+# Standalone reference app (not part of the extension)
+app.py
