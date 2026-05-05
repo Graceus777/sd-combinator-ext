@@ -241,33 +241,65 @@ def _attach_adetailer(p):
 
 
 def _attach_controlnet(p, cn_args: Dict):
-    """Attach ControlNet args to a processing object."""
-    try:
-        from modules import scripts as scripts_module
+    """
+    Attach a ControlNet unit to a processing object using sd-webui-controlnet's
+    official external_code API. This handles the script_args wiring across
+    versions and works for both txt2img and img2img.
+    """
+    import numpy as np
+    from PIL import Image as PILImage
 
-        for script in scripts_module.scripts_txt2img.alwayson_scripts:
-            if "controlnet" in script.title().lower():
-                args_from = script.args_from
-                if hasattr(p, "script_args"):
-                    while len(p.script_args) < args_from + 1:
-                        p.script_args.append(None)
-                    # ControlNet expects a list of unit dicts
-                    unit = {
-                        "enabled": True,
-                        "image": cn_args.get("image"),
-                        "module": cn_args.get("preprocessor", "none"),
-                        "model": cn_args.get("model", ""),
-                        "weight": cn_args.get("weight", 1.0),
-                        "guidance_start": cn_args.get("guidance_start", 0.0),
-                        "guidance_end": cn_args.get("guidance_end", 1.0),
-                        "pixel_perfect": True,
-                        "control_mode": cn_args.get("control_mode", "Balanced"),
-                        "resize_mode": "Just Resize",
-                    }
-                    p.script_args[args_from] = [unit]
-                break
-    except Exception:
-        pass
+    # Locate sd-webui-controlnet's external_code module. It registers itself
+    # under multiple possible names depending on install path.
+    external_code = None
+    for mod_name in (
+        "scripts.external_code",
+        "extensions.sd-webui-controlnet.scripts.external_code",
+        "extensions-builtin.sd-webui-controlnet.scripts.external_code",
+    ):
+        try:
+            external_code = __import__(mod_name, fromlist=["external_code"])
+            break
+        except Exception:
+            continue
+    if external_code is None:
+        print("[combinator] ControlNet: sd-webui-controlnet not installed or external_code not importable; skipping")
+        return
+
+    image = cn_args.get("image")
+    if image is None:
+        print("[combinator] ControlNet: no control image provided; skipping")
+        return
+
+    # ControlNet expects numpy uint8 RGB.
+    if isinstance(image, PILImage.Image):
+        image = np.array(image.convert("RGB"))
+    elif isinstance(image, dict) and "image" in image:
+        # Gradio image-with-mask payload
+        img = image["image"]
+        if isinstance(img, PILImage.Image):
+            img = np.array(img.convert("RGB"))
+        image = img
+
+    try:
+        unit = external_code.ControlNetUnit(
+            enabled=True,
+            image=image,
+            module=cn_args.get("preprocessor", "none"),
+            model=cn_args.get("model", ""),
+            weight=float(cn_args.get("weight", 1.0)),
+            guidance_start=float(cn_args.get("guidance_start", 0.0)),
+            guidance_end=float(cn_args.get("guidance_end", 1.0)),
+            pixel_perfect=True,
+            control_mode=cn_args.get("control_mode", "Balanced"),
+            resize_mode="Crop and Resize",
+        )
+        external_code.update_cn_script_in_processing(p, [unit])
+        print(f"[combinator] ControlNet attached: model={unit.model} module={unit.module} weight={unit.weight}")
+    except Exception as e:
+        print(f"[combinator] ControlNet attach failed: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def _save_images(
