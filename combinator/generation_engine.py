@@ -32,6 +32,21 @@ def _set_job(job_name: str):
         pass
 
 
+def _reset_interrupt_state():
+    """Clear A1111 interrupt/skip flags so process_images() doesn't bail."""
+    try:
+        from modules import shared
+        was_interrupted = shared.state.interrupted
+        shared.state.interrupted = False
+        shared.state.skipped = False
+        if hasattr(shared.state, "stopping_generation"):
+            shared.state.stopping_generation = False
+        if was_interrupted:
+            print("[combinator] cleared stale interrupt flag before generation")
+    except Exception as e:
+        print(f"[combinator] failed to reset interrupt state: {e}")
+
+
 def generate_txt2img(
     prompt: str,
     negative_prompt: str = "",
@@ -58,6 +73,8 @@ def generate_txt2img(
         (success, message, list_of_saved_filepaths, list_of_pil_images)
     """
     from modules import processing, shared
+
+    _reset_interrupt_state()
 
     p = processing.StableDiffusionProcessingTxt2Img(
         sd_model=shared.sd_model,
@@ -94,7 +111,9 @@ def generate_txt2img(
         return False, f"Generation error: {e}", [], []
 
     if not result.images:
-        return False, "No images generated", [], []
+        from modules import shared as _s
+        reason = "interrupted" if _s.state.interrupted else ("skipped" if _s.state.skipped else "empty result")
+        return False, f"No images generated ({reason})", [], []
 
     # Save images to disk
     saved_files = _save_images(
@@ -135,6 +154,8 @@ def generate_img2img(
     """
     from modules import processing, shared
 
+    _reset_interrupt_state()
+
     p = processing.StableDiffusionProcessingImg2Img(
         sd_model=shared.sd_model,
         outpath_samples=shared.opts.outdir_img2img_samples,
@@ -165,7 +186,9 @@ def generate_img2img(
         return False, f"Generation error: {e}", [], []
 
     if not result.images:
-        return False, "No images generated", [], []
+        from modules import shared as _s
+        reason = "interrupted" if _s.state.interrupted else ("skipped" if _s.state.skipped else "empty result")
+        return False, f"No images generated ({reason})", [], []
 
     saved_files = _save_images(
         result.images[:batch_size], output_dir, custom_filename
