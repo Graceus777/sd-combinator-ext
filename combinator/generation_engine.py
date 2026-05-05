@@ -129,26 +129,42 @@ def generate_txt2img(
 
     _reset_interrupt_state()
 
+    # Construct with minimal kwargs, then set fields explicitly. Some A1111
+    # versions silently swallow unrecognized constructor kwargs and leave
+    # fields at defaults — assigning attributes directly avoids that and
+    # mirrors what modules/api/api.py does internally.
     p = processing.StableDiffusionProcessingTxt2Img(
         sd_model=shared.sd_model,
         outpath_samples=shared.opts.outdir_txt2img_samples,
         outpath_grids=shared.opts.outdir_txt2img_grids,
-        prompt=prompt,
-        negative_prompt=negative_prompt,
-        steps=steps,
-        sampler_name=sampler_name,
-        cfg_scale=cfg_scale,
-        width=width,
-        height=height,
-        seed=seed,
-        batch_size=batch_size,
     )
+    p.prompt = prompt
+    p.negative_prompt = negative_prompt
+    p.steps = int(steps)
+    p.sampler_name = sampler_name
+    p.cfg_scale = float(cfg_scale)
+    p.width = int(width)
+    p.height = int(height)
+    p.seed = int(seed)
+    p.batch_size = int(batch_size)
+    p.n_iter = 1
+    # Let our own _save_images handle the file output; avoids duplicate
+    # saves and prevents grids from polluting result.images.
+    p.do_not_save_samples = True
+    p.do_not_save_grid = True
 
     if enable_hr:
         p.enable_hr = True
-        p.hr_scale = hr_scale
-        p.hr_upscaler_name = hr_upscaler
-        p.denoising_strength = denoising_strength
+        p.hr_scale = float(hr_scale)
+        p.hr_upscaler = hr_upscaler  # newer A1111
+        p.hr_upscaler_name = hr_upscaler  # legacy
+        p.denoising_strength = float(denoising_strength)
+
+    print(
+        f"[combinator] txt2img params: steps={p.steps} sampler={p.sampler_name!r} "
+        f"cfg={p.cfg_scale} {p.width}x{p.height} seed={p.seed} batch={p.batch_size} "
+        f"hr={enable_hr}"
+    )
 
     if enable_adetailer or controlnet_args:
         _ensure_scripts_runner(p, is_img2img=False)
@@ -212,18 +228,27 @@ def generate_img2img(
         sd_model=shared.sd_model,
         outpath_samples=shared.opts.outdir_img2img_samples,
         outpath_grids=shared.opts.outdir_img2img_grids,
-        init_images=[init_image],
-        prompt=prompt,
-        negative_prompt=negative_prompt,
-        steps=steps,
-        sampler_name=sampler_name,
-        cfg_scale=cfg_scale,
-        width=width,
-        height=height,
-        seed=seed,
-        batch_size=batch_size,
-        denoising_strength=denoising_strength,
-        resize_mode=resize_mode,
+    )
+    p.init_images = [init_image]
+    p.prompt = prompt
+    p.negative_prompt = negative_prompt
+    p.steps = int(steps)
+    p.sampler_name = sampler_name
+    p.cfg_scale = float(cfg_scale)
+    p.width = int(width)
+    p.height = int(height)
+    p.seed = int(seed)
+    p.batch_size = int(batch_size)
+    p.n_iter = 1
+    p.denoising_strength = float(denoising_strength)
+    p.resize_mode = int(resize_mode)
+    p.do_not_save_samples = True
+    p.do_not_save_grid = True
+
+    print(
+        f"[combinator] img2img params: steps={p.steps} sampler={p.sampler_name!r} "
+        f"cfg={p.cfg_scale} {p.width}x{p.height} seed={p.seed} batch={p.batch_size} "
+        f"denoise={p.denoising_strength} resize_mode={p.resize_mode}"
     )
 
     if enable_adetailer or controlnet_args:
