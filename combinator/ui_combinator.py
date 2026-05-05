@@ -248,6 +248,16 @@ def _run_generation(
     state.total_jobs = total_jobs
     state.current_job = 0
 
+    # Clear any leftover interrupt from a previous run, otherwise
+    # process_images() bails immediately and yields no images.
+    try:
+        from modules import shared
+        shared.state.interrupted = False
+        shared.state.skipped = False
+        shared.state.stopping_generation = False
+    except Exception:
+        pass
+
     output_dir = config.get("output_dir", "generated_images")
     mode_str = "img2img" if is_img2img else "txt2img"
     log_lines = [
