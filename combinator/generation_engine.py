@@ -32,6 +32,59 @@ def _set_job(job_name: str):
         pass
 
 
+def _ensure_scripts_runner(p, is_img2img: bool):
+    """
+    Wire up A1111's scripts runner on a fresh processing object so alwayson
+    scripts (ADetailer, ControlNet, etc.) actually fire. Initializes
+    p.script_args to a fully-sized list of per-script defaults — without this,
+    enabling one script causes every other alwayson script to read None args
+    from its slot and crash.
+    """
+    from modules import scripts as scripts_module
+
+    runner = scripts_module.scripts_img2img if is_img2img else scripts_module.scripts_txt2img
+    p.scripts = runner
+
+    if not runner.alwayson_scripts:
+        p.script_args = []
+        return
+
+    total = max(s.args_to for s in runner.alwayson_scripts)
+    args = [None] * total
+    for s in runner.alwayson_scripts:
+        # Try a few places the script may have stashed default values.
+        defaults = None
+        if hasattr(s, "default_args"):
+            try:
+                defaults = list(s.default_args)
+            except Exception:
+                defaults = None
+        if defaults is None and hasattr(s, "controls") and s.controls:
+            defaults = [getattr(c, "value", None) for c in s.controls]
+        if defaults is None:
+            defaults = [None] * (s.args_to - s.args_from)
+        # Ensure correct length
+        slot_size = s.args_to - s.args_from
+        if len(defaults) < slot_size:
+            defaults = defaults + [None] * (slot_size - len(defaults))
+        elif len(defaults) > slot_size:
+            defaults = defaults[:slot_size]
+        args[s.args_from:s.args_to] = defaults
+
+    p.script_args = args
+
+
+def _find_alwayson_script(p, name_substring: str):
+    """Find an alwayson script by case-insensitive title substring."""
+    if not getattr(p, "scripts", None):
+        return None
+    needle = name_substring.lower()
+    for s in p.scripts.alwayson_scripts:
+        if needle in s.title().lower():
+            return s
+    return None
+
+
 def _reset_interrupt_state():
     """Clear A1111 interrupt/skip flags so process_images() doesn't bail."""
     try:
@@ -97,13 +150,12 @@ def generate_txt2img(
         p.hr_upscaler_name = hr_upscaler
         p.denoising_strength = denoising_strength
 
-    # ADetailer via alwayson_scripts
-    if enable_adetailer:
-        _attach_adetailer(p)
-
-    # ControlNet via alwayson_scripts
-    if controlnet_args:
-        _attach_controlnet(p, controlnet_args)
+    if enable_adetailer or controlnet_args:
+        _ensure_scripts_runner(p, is_img2img=False)
+        if enable_adetailer:
+            _attach_adetailer(p)
+        if controlnet_args:
+            _attach_controlnet(p, controlnet_args)
 
     try:
         result = processing.process_images(p)
@@ -174,11 +226,12 @@ def generate_img2img(
         resize_mode=resize_mode,
     )
 
-    if enable_adetailer:
-        _attach_adetailer(p)
-
-    if controlnet_args:
-        _attach_controlnet(p, controlnet_args)
+    if enable_adetailer or controlnet_args:
+        _ensure_scripts_runner(p, is_img2img=True)
+        if enable_adetailer:
+            _attach_adetailer(p)
+        if controlnet_args:
+            _attach_controlnet(p, controlnet_args)
 
     try:
         result = processing.process_images(p)
@@ -214,30 +267,42 @@ def interrogate_clip(image: Image.Image) -> Optional[str]:
 
 
 def _attach_adetailer(p):
-    """Attach ADetailer script args to a processing object."""
-    try:
-        from modules import scripts as scripts_module
+    """
+    Enable ADetailer on the processing object. Assumes _ensure_scripts_runner
+    has been called so p.script_args is already a properly sized list with
+    sane defaults for every alwayson script.
+    """
+    script = _find_alwayson_script(p, "adetailer")
+    if script is None:
+        print("[combinator] ADetailer: not installed; skipping")
+        return
 
-        # Find ADetailer among loaded scripts
-        for script in scripts_module.scripts_txt2img.alwayson_scripts:
-            if script.title().lower().startswith("adetailer"):
-                # ADetailer expects: [enabled, skip_img2img, model_args_dict]
-                ad_args = {
-                    "ad_model": "face_yolov8n.pt",
-                    "ad_mask_k_largest": 1,
-                }
-                # Set via script_args at the correct index
-                args_from = script.args_from
-                args_to = script.args_to
-                if hasattr(p, "script_args"):
-                    while len(p.script_args) < args_to:
-                        p.script_args.append(None)
-                    p.script_args[args_from] = True      # ad_enable
-                    p.script_args[args_from + 1] = False  # skip_img2img
-                    p.script_args[args_from + 2] = ad_args
-                break
-    except Exception:
-        pass
+    if not isinstance(p.script_args, list):
+        # Defensive — caller forgot _ensure_scripts_runner
+        p.script_args = list(p.script_args)
+
+    ad_args = {
+        "ad_model": "face_yolov8n.pt",
+        "ad_mask_k_largest": 1,
+        "ad_confidence": 0.3,
+        "ad_dilate_erode": 4,
+        "ad_mask_blur": 4,
+        "ad_denoising_strength": 0.4,
+        "ad_inpaint_only_masked": True,
+        "ad_inpaint_only_masked_padding": 32,
+    }
+
+    args_from = script.args_from
+    try:
+        # ADetailer arg layout: [enabled, skip_img2img, model_dict_1, model_dict_2, ...]
+        p.script_args[args_from] = True       # ad_enable
+        p.script_args[args_from + 1] = False  # skip_img2img
+        p.script_args[args_from + 2] = ad_args
+        print(f"[combinator] ADetailer attached: model={ad_args['ad_model']}")
+    except Exception as e:
+        print(f"[combinator] ADetailer attach failed: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def _attach_controlnet(p, cn_args: Dict):
