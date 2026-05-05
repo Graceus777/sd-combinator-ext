@@ -61,6 +61,8 @@ def generate_txt2img(
 
     p = processing.StableDiffusionProcessingTxt2Img(
         sd_model=shared.sd_model,
+        outpath_samples=shared.opts.outdir_txt2img_samples,
+        outpath_grids=shared.opts.outdir_txt2img_grids,
         prompt=prompt,
         negative_prompt=negative_prompt,
         steps=steps,
@@ -135,6 +137,8 @@ def generate_img2img(
 
     p = processing.StableDiffusionProcessingImg2Img(
         sd_model=shared.sd_model,
+        outpath_samples=shared.opts.outdir_img2img_samples,
+        outpath_grids=shared.opts.outdir_img2img_grids,
         init_images=[init_image],
         prompt=prompt,
         negative_prompt=negative_prompt,
