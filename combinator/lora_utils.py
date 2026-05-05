@@ -107,79 +107,105 @@ def extract_activation_from_metadata(metadata: dict) -> str:
     return ""
 
 
+def _lora_from_registry_entry(name: str, entry) -> LoRA:
+    activation = get_activation_text(name)
+    if not activation:
+        meta = getattr(entry, "metadata", {}) or {}
+        activation = extract_activation_from_metadata(meta)
+    return LoRA(
+        name=name,
+        filepath=getattr(entry, "filename", ""),
+        weight=1.0,
+        prompt=activation,
+    )
+
+
+def _lora_dir() -> Optional[Path]:
+    """Resolve A1111's LoRA directory."""
+    try:
+        from modules import shared as a1111_shared
+        path = getattr(a1111_shared.cmd_opts, "lora_dir", None)
+        if path:
+            return Path(path)
+    except Exception:
+        pass
+    # Fallback: assume standard A1111 layout (models/Lora next to extensions/)
+    # EXT_DIR = .../extensions/sd-combinator-ext  ->  webui root is parents[1]
+    try:
+        from combinator.shared import EXT_DIR
+        webui_root = EXT_DIR.parent.parent
+        candidate = webui_root / "models" / "Lora"
+        if candidate.exists():
+            return candidate
+    except Exception:
+        pass
+    return None
+
+
 def discover_loras() -> List[LoRA]:
     """
-    Discover available LoRAs from A1111's internal registry.
-    Falls back to scanning the lora_texts/ directory if the
-    internal registry is unavailable.
+    Discover available LoRAs.
+
+    Priority:
+      1. Built-in Lora extension's `networks.available_networks` (modern A1111).
+      2. Built-in Lora extension's `lora.available_loras` (legacy).
+      3. Direct scan of A1111's lora_dir (no metadata, just filenames).
     """
     loras = []
 
-    # Try A1111 internal LoRA registry
+    # 1. Modern A1111 (1.5+) built-in Lora extension exposes top-level `networks`
     try:
-        import modules.extra_networks_lora as lora_module
-        available = getattr(lora_module, "available_loras", None)
-        if available is None:
-            # Newer A1111 versions may use a different path
-            from modules import sd_models
-            import lora as lora_ext
-            available = getattr(lora_ext, "available_loras", {})
+        import networks  # type: ignore
+        available = getattr(networks, "available_networks", {}) or {}
+        for name, entry in available.items():
+            loras.append(_lora_from_registry_entry(name, entry))
+    except Exception as e:
+        print(f"[combinator] networks.available_networks unavailable: {e}")
 
-        for name, lora_on_disk in available.items():
-            activation = get_activation_text(name)
-            if not activation:
-                meta = getattr(lora_on_disk, "metadata", {}) or {}
-                activation = extract_activation_from_metadata(meta)
-            loras.append(LoRA(
-                name=name,
-                filepath=getattr(lora_on_disk, "filename", ""),
-                weight=1.0,
-                prompt=activation,
-            ))
-    except Exception:
-        # Fallback: try the sd-webui Lora extension module
+    # 2. Legacy: top-level `lora` module
+    if not loras:
         try:
-            from extensions.Lora import lora
-            for name, lora_on_disk in lora.available_loras.items():
-                activation = get_activation_text(name)
-                if not activation:
-                    meta = getattr(lora_on_disk, "metadata", {}) or {}
-                    activation = extract_activation_from_metadata(meta)
-                loras.append(LoRA(
-                    name=name,
-                    filepath=getattr(lora_on_disk, "filename", ""),
-                    weight=1.0,
-                    prompt=activation,
-                ))
-        except Exception:
-            pass
+            import lora as lora_ext  # type: ignore
+            available = getattr(lora_ext, "available_loras", {}) or {}
+            for name, entry in available.items():
+                loras.append(_lora_from_registry_entry(name, entry))
+        except Exception as e:
+            print(f"[combinator] lora.available_loras unavailable: {e}")
 
-    # If internal registry unavailable, discover from lora_texts/ names
-    if not loras and LORA_TEXTS_DIR.exists():
-        for json_file in LORA_TEXTS_DIR.glob("*.json"):
-            name = json_file.stem
-            activation = get_activation_text(name)
-            loras.append(LoRA(
-                name=name,
-                filepath="",
-                weight=1.0,
-                prompt=activation,
-            ))
+    # 3. Direct disk scan
+    if not loras:
+        lora_dir = _lora_dir()
+        if lora_dir and lora_dir.exists():
+            print(f"[combinator] scanning LoRA dir directly: {lora_dir}")
+            for ext in ("*.safetensors", "*.ckpt", "*.pt"):
+                for f in lora_dir.rglob(ext):
+                    name = f.stem
+                    loras.append(LoRA(
+                        name=name,
+                        filepath=str(f),
+                        weight=1.0,
+                        prompt=get_activation_text(name),
+                    ))
+        else:
+            print(f"[combinator] no LoRA dir found (resolved: {lora_dir})")
 
     loras.sort(key=lambda x: x.name.lower())
+    print(f"[combinator] discovered {len(loras)} LoRAs")
     return loras
 
 
 def refresh_lora_registry():
     """Tell A1111 to refresh its LoRA list."""
     try:
-        from modules import sd_models
-        sd_models.list_models()
+        import networks  # type: ignore
+        if hasattr(networks, "list_available_networks"):
+            networks.list_available_networks()
+            return
     except Exception:
         pass
     try:
-        import modules.extra_networks_lora as lora_module
-        if hasattr(lora_module, "list_available_loras"):
-            lora_module.list_available_loras()
+        import lora as lora_ext  # type: ignore
+        if hasattr(lora_ext, "list_available_loras"):
+            lora_ext.list_available_loras()
     except Exception:
         pass
