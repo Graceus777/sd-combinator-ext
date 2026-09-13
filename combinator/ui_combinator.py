@@ -53,6 +53,19 @@ def _sort_bank(sort_method):
         state.bank_loras = sorted(state.bank_loras, key=lambda x: x.lower())
     elif sort_method == "Z-A":
         state.bank_loras = sorted(state.bank_loras, key=lambda x: x.lower(), reverse=True)
+    elif sort_method == "Date Modified":
+        loras_by_name = {lora.name: lora for lora in state.all_loras}
+
+        def modified_time(name):
+            lora = loras_by_name.get(name)
+            if not lora or not lora.filepath:
+                return 0
+            try:
+                return os.path.getmtime(lora.filepath)
+            except (OSError, TypeError):
+                return 0
+
+        state.bank_loras = sorted(state.bank_loras, key=modified_time, reverse=True)
     return gr.update(choices=state.bank_loras, value=[])
 
 
@@ -104,15 +117,35 @@ def _do_update_weight(zone, lora_name, weight):
     return format_zone(zone_dict) if zone_dict else "(empty)"
 
 
-def _build_preview(base_prompt, negative_prompt, random_count, batch_size, batch_count):
-    if not state.always_loras and not state.loop_loras and not state.random_loras:
-        return f"Prompt: {base_prompt}" if base_prompt else "(no LoRAs selected)"
-
+def _build_preview(
+    base_prompt, negative_prompt, random_count, batch_size, batch_count,
+    gen_mode, steps, sampler, cfg, width, height,
+    enable_hr, hr_scale, hr_upscaler, denoising, img2img_denoising,
+):
     previews = []
     loop_count = max(1, len(state.loop_loras))
     total = loop_count * int(batch_count) * int(batch_size)
     previews.append(f"=== Will generate {total} image(s) ===")
-    previews.append(f"    ({loop_count} variants x {int(batch_count)} batches x {int(batch_size)} per batch)\n")
+    previews.append(
+        f"SETTINGS: {gen_mode} | {int(steps)} steps | {sampler} | "
+        f"CFG {float(cfg):g} | {int(width)}x{int(height)}"
+    )
+    previews.append(
+        f"BATCH: {loop_count} variant(s) x {int(batch_count)} batch(es) "
+        f"x {int(batch_size)} image(s)"
+    )
+    if gen_mode == "img2img":
+        previews.append(f"IMG2IMG DENOISING: {float(img2img_denoising):g}")
+    elif enable_hr:
+        previews.append(
+            f"HIRES FIX: {float(hr_scale):g}x | {hr_upscaler} | "
+            f"denoising {float(denoising):g}"
+        )
+
+    previews.append("")
+
+    if not state.always_loras and not state.loop_loras and not state.random_loras:
+        previews.append("LORAS: (none selected)")
 
     if state.always_loras:
         parts = [f"<lora:{n}:{e.weight}>" for n, e in state.always_loras.items()]
@@ -191,6 +224,7 @@ def _run_generation(
     control_preprocessor_val="none", control_model_val="",
     control_weight_val=1.0, control_guidance_start_val=0.0,
     control_guidance_end_val=1.0, control_mode_val="Balanced",
+    control_low_vram_val=False,
     progress=gr.Progress(),
 ):
     """Run the generation queue, yielding (log, gallery) after each image."""
@@ -223,6 +257,7 @@ def _run_generation(
             "guidance_start": control_guidance_start_val,
             "guidance_end": control_guidance_end_val,
             "control_mode": control_mode_val,
+            "low_vram": control_low_vram_val,
         }
 
     # History for frequency weighting and skip-exists
@@ -248,17 +283,6 @@ def _run_generation(
     state.total_jobs = total_jobs
     state.current_job = 0
 
-    # Clear any leftover interrupt from a previous run, otherwise
-    # process_images() bails immediately and yields no images.
-    try:
-        from modules import shared
-        shared.state.interrupted = False
-        shared.state.skipped = False
-        shared.state.stopping_generation = False
-    except Exception:
-        pass
-
-    output_dir = config.get("output_dir", "generated_images")
     mode_str = "img2img" if is_img2img else "txt2img"
     log_lines = [
         f"Starting {mode_str}: {num_variants} variants x {int(batch_count)} batches "
@@ -379,7 +403,6 @@ def _run_generation(
                     resize_mode=resize_mode_int,
                     enable_adetailer=bool(enable_adetailer),
                     controlnet_args=cn_args,
-                    output_dir=output_dir,
                     custom_filename=custom_fn,
                 )
             else:
@@ -398,7 +421,6 @@ def _run_generation(
                     denoising_strength=float(denoising),
                     enable_adetailer=bool(enable_adetailer),
                     controlnet_args=cn_args,
-                    output_dir=output_dir,
                     custom_filename=custom_fn,
                 )
 
@@ -463,7 +485,12 @@ def create_combinator_tab():
                 scan_status = gr.Textbox(label="Status", interactive=False, scale=2)
 
             with gr.Row():
-                lora_sort = gr.Dropdown(label="Sort", choices=["A-Z", "Z-A"], value="A-Z", scale=1)
+                lora_sort = gr.Dropdown(
+                    label="Sort",
+                    choices=["A-Z", "Z-A", "Date Modified"],
+                    value="A-Z",
+                    scale=1,
+                )
 
             lora_bank = gr.CheckboxGroup(
                 label="Available LoRAs",
@@ -577,6 +604,7 @@ def create_combinator_tab():
                         choices=["Balanced", "My prompt is more important", "ControlNet is more important"],
                         value="Balanced",
                     )
+                    control_low_vram = gr.Checkbox(label="Low VRAM", value=False)
 
             with gr.Row():
                 sampler_input = gr.Dropdown(
@@ -757,7 +785,11 @@ def create_combinator_tab():
         # Preview
         refresh_preview_btn.click(
             fn=_build_preview,
-            inputs=[positive_prompt, negative_prompt, random_count, batch_size, batch_count],
+            inputs=[
+                positive_prompt, negative_prompt, random_count, batch_size, batch_count,
+                gen_mode, steps_input, sampler_input, cfg_input, width_input, height_input,
+                enable_hr, hr_scale, hr_upscaler, denoising, img2img_denoising,
+            ],
             outputs=[preview],
         )
 
@@ -773,6 +805,7 @@ def create_combinator_tab():
                 gen_mode, img2img_image, img2img_denoising, img2img_resize,
                 enable_controlnet, control_image, control_preprocessor, control_model,
                 control_weight, control_start, control_end, control_mode,
+                control_low_vram,
             ],
             outputs=[log_output, gallery],
         )

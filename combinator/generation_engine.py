@@ -5,7 +5,6 @@ Replaces the HTTP API client — calls modules.processing directly
 for txt2img and img2img, returning PIL Images with no base64 overhead.
 """
 import os
-from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image
@@ -100,6 +99,31 @@ def _reset_interrupt_state():
         print(f"[combinator] failed to reset interrupt state: {e}")
 
 
+def _apply_basic_generation_params(
+    p,
+    prompt: str,
+    negative_prompt: str,
+    steps: int,
+    sampler_name: str,
+    cfg_scale: float,
+    width: int,
+    height: int,
+    seed: int,
+    batch_size: int,
+):
+    """Apply the shared txt2img/img2img parameters to a processing object."""
+    p.prompt = prompt
+    p.negative_prompt = negative_prompt
+    p.steps = int(steps)
+    p.sampler_name = sampler_name
+    p.cfg_scale = float(cfg_scale)
+    p.width = int(width)
+    p.height = int(height)
+    p.seed = int(seed)
+    p.batch_size = int(batch_size)
+    p.n_iter = 1
+
+
 def generate_txt2img(
     prompt: str,
     negative_prompt: str = "",
@@ -116,7 +140,6 @@ def generate_txt2img(
     denoising_strength: float = 0.5,
     enable_adetailer: bool = False,
     controlnet_args: Optional[Dict] = None,
-    output_dir: str = "generated_images",
     custom_filename: str = "image",
 ) -> Tuple[bool, str, List[str], List[Image.Image]]:
     """
@@ -138,18 +161,13 @@ def generate_txt2img(
         outpath_samples=shared.opts.outdir_txt2img_samples,
         outpath_grids=shared.opts.outdir_txt2img_grids,
     )
-    p.prompt = prompt
-    p.negative_prompt = negative_prompt
-    p.steps = int(steps)
-    p.sampler_name = sampler_name
-    p.cfg_scale = float(cfg_scale)
-    p.width = int(width)
-    p.height = int(height)
-    p.seed = int(seed)
-    p.batch_size = int(batch_size)
-    p.n_iter = 1
-    # Let our own _save_images handle the file output; avoids duplicate
-    # saves and prevents grids from polluting result.images.
+    _apply_basic_generation_params(
+        p, prompt, negative_prompt, steps, sampler_name, cfg_scale,
+        width, height, seed, batch_size,
+    )
+    # Save explicitly after processing so the returned images can be passed
+    # through A1111's metadata-aware saver exactly once. This also avoids
+    # grids being mixed into result.images.
     p.do_not_save_samples = True
     p.do_not_save_grid = True
 
@@ -160,18 +178,28 @@ def generate_txt2img(
         p.hr_upscaler_name = hr_upscaler  # legacy
         p.denoising_strength = float(denoising_strength)
 
-    print(
-        f"[combinator] txt2img params: steps={p.steps} sampler={p.sampler_name!r} "
-        f"cfg={p.cfg_scale} {p.width}x{p.height} seed={p.seed} batch={p.batch_size} "
-        f"hr={enable_hr}"
-    )
-
     if enable_adetailer or controlnet_args:
         _ensure_scripts_runner(p, is_img2img=False)
         if enable_adetailer:
             _attach_adetailer(p)
         if controlnet_args:
             _attach_controlnet(p, controlnet_args)
+
+        # Assigning script_args runs A1111's built-in processing-script setup.
+        # Its Sampler and Seed scripts use the main UI defaults (commonly 20
+        # steps and DPM++ 2M), overwriting values already placed on p. Restore
+        # the Combinator values after that setup so sampling and PNG infotext
+        # both receive the selections from this tab.
+        _apply_basic_generation_params(
+            p, prompt, negative_prompt, steps, sampler_name, cfg_scale,
+            width, height, seed, batch_size,
+        )
+
+    print(
+        f"[combinator] txt2img effective params: steps={p.steps} sampler={p.sampler_name!r} "
+        f"cfg={p.cfg_scale} {p.width}x{p.height} seed={p.seed} batch={p.batch_size} "
+        f"hr={enable_hr}"
+    )
 
     try:
         result = processing.process_images(p)
@@ -183,10 +211,7 @@ def generate_txt2img(
         reason = "interrupted" if _s.state.interrupted else ("skipped" if _s.state.skipped else "empty result")
         return False, f"No images generated ({reason})", [], []
 
-    # Save images to disk
-    saved_files = _save_images(
-        result.images[:batch_size], output_dir, custom_filename
-    )
+    saved_files = _save_images(result.images[:batch_size], p, result, custom_filename)
 
     return (
         True,
@@ -211,7 +236,6 @@ def generate_img2img(
     resize_mode: int = 0,
     enable_adetailer: bool = False,
     controlnet_args: Optional[Dict] = None,
-    output_dir: str = "generated_images",
     custom_filename: str = "img2img",
 ) -> Tuple[bool, str, List[str], List[Image.Image]]:
     """
@@ -230,26 +254,14 @@ def generate_img2img(
         outpath_grids=shared.opts.outdir_img2img_grids,
     )
     p.init_images = [init_image]
-    p.prompt = prompt
-    p.negative_prompt = negative_prompt
-    p.steps = int(steps)
-    p.sampler_name = sampler_name
-    p.cfg_scale = float(cfg_scale)
-    p.width = int(width)
-    p.height = int(height)
-    p.seed = int(seed)
-    p.batch_size = int(batch_size)
-    p.n_iter = 1
+    _apply_basic_generation_params(
+        p, prompt, negative_prompt, steps, sampler_name, cfg_scale,
+        width, height, seed, batch_size,
+    )
     p.denoising_strength = float(denoising_strength)
     p.resize_mode = int(resize_mode)
     p.do_not_save_samples = True
     p.do_not_save_grid = True
-
-    print(
-        f"[combinator] img2img params: steps={p.steps} sampler={p.sampler_name!r} "
-        f"cfg={p.cfg_scale} {p.width}x{p.height} seed={p.seed} batch={p.batch_size} "
-        f"denoise={p.denoising_strength} resize_mode={p.resize_mode}"
-    )
 
     if enable_adetailer or controlnet_args:
         _ensure_scripts_runner(p, is_img2img=True)
@@ -257,6 +269,17 @@ def generate_img2img(
             _attach_adetailer(p)
         if controlnet_args:
             _attach_controlnet(p, controlnet_args)
+
+        _apply_basic_generation_params(
+            p, prompt, negative_prompt, steps, sampler_name, cfg_scale,
+            width, height, seed, batch_size,
+        )
+
+    print(
+        f"[combinator] img2img effective params: steps={p.steps} sampler={p.sampler_name!r} "
+        f"cfg={p.cfg_scale} {p.width}x{p.height} seed={p.seed} batch={p.batch_size} "
+        f"denoise={p.denoising_strength} resize_mode={p.resize_mode}"
+    )
 
     try:
         result = processing.process_images(p)
@@ -268,9 +291,7 @@ def generate_img2img(
         reason = "interrupted" if _s.state.interrupted else ("skipped" if _s.state.skipped else "empty result")
         return False, f"No images generated ({reason})", [], []
 
-    saved_files = _save_images(
-        result.images[:batch_size], output_dir, custom_filename
-    )
+    saved_files = _save_images(result.images[:batch_size], p, result, custom_filename)
 
     return (
         True,
@@ -383,6 +404,7 @@ def _attach_controlnet(p, cn_args: Dict):
             pixel_perfect=True,
             control_mode=cn_args.get("control_mode", "Balanced"),
             resize_mode="Crop and Resize",
+            low_vram=bool(cn_args.get("low_vram", False)),
         )
         external_code.update_cn_script_in_processing(p, [unit])
         print(f"[combinator] ControlNet attached: model={unit.model} module={unit.module} weight={unit.weight}")
@@ -394,26 +416,46 @@ def _attach_controlnet(p, cn_args: Dict):
 
 def _save_images(
     images: List[Image.Image],
-    output_dir: str,
+    p: Any,
+    processed: Any,
     custom_filename: str,
 ) -> List[str]:
-    """Save PIL images to disk, return list of file paths."""
-    os.makedirs(output_dir, exist_ok=True)
+    """Save images through A1111 so its output path and infotext are honored."""
+    from modules import images as images_module, shared
+
     saved = []
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    extension = str(getattr(shared.opts, "samples_format", "png") or "png").lstrip(".")
+    basename = _safe_basename(custom_filename)
+    infotexts = list(getattr(processed, "infotexts", None) or [])
+    seeds = list(getattr(processed, "all_seeds", None) or getattr(p, "all_seeds", None) or [])
+    prompts = list(getattr(processed, "all_prompts", None) or getattr(p, "all_prompts", None) or [])
 
     for idx, img in enumerate(images):
-        if len(images) > 1:
-            filename = f"{timestamp}_{custom_filename}_{idx + 1}.png"
-        else:
-            filename = f"{timestamp}_{custom_filename}.png"
-
-        filepath = os.path.abspath(os.path.join(output_dir, filename))
-        filepath = filepath.replace("\\", "/")  # Normalize for Gradio
         try:
-            img.save(filepath, format="PNG")
-            saved.append(filepath)
+            info = infotexts[idx] if idx < len(infotexts) else (img.info or {}).get("parameters")
+            seed = seeds[idx] if idx < len(seeds) else None
+            prompt = prompts[idx] if idx < len(prompts) else getattr(p, "prompt", "")
+            existing_info = dict(img.info or {})
+            filepath, _ = images_module.save_image(
+                img,
+                path=p.outpath_samples,
+                basename=basename,
+                seed=seed,
+                prompt=prompt,
+                extension=extension,
+                info=info,
+                p=p,
+                existing_info=existing_info,
+            )
+            saved.append(os.path.abspath(filepath).replace(chr(92), "/"))
         except Exception as e:
             print(f"[CombinatorSD] Failed to save image {idx}: {e}")
 
     return saved
+
+
+def _safe_basename(value: str) -> str:
+    """Keep extension-generated names valid on all platforms."""
+    invalid = set('<>:"/|?*') | {chr(92)}
+    basename = "".join("_" if char in invalid else char for char in str(value or "image"))
+    return basename.strip(" .") or "image"

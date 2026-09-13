@@ -192,3 +192,9 @@ config.json
 
 # Standalone reference app (not part of the extension)
 app.py
+/configs/
+/lora_texts/
+*.bak
+.env.*
+*.safetensors
+*.ckpt

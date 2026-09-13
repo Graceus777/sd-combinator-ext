@@ -19,7 +19,6 @@ HISTORY_FILE = EXT_DIR / "generation_history.jsonl"
 
 # Default configuration
 DEFAULT_CONFIG = {
-    "output_dir": "generated_images",
     "last_zone_config": "",
     "last_prompt_config": "",
     "defaults": {
